@@ -1,0 +1,16 @@
+{
+  "name": "ledger-payment-backend",
+  "version": "1.0.0",
+  "description": "Automated subscription payment verification for The Ledger — SMS-forwarding webhook now, MTN MoMo API ready to activate later.",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "node-fetch": "^2.7.0"
+  }
+}

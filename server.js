@@ -37,6 +37,35 @@ const PORT = process.env.PORT || 3000;
 const DB_PATH = path.join(__dirname, "data", "subscriptions.json");
 const SUBSCRIPTION_DAYS = 30;
 
+/* ---------------- subscription prices per country ----------------
+   The server decides the price — never the app/phone — so nobody can pay
+   less by tampering with the request. Change prices here or in .env.
+   usd: price when the customer pays in US dollars
+   lrd: optional price when paying in Liberian dollars (null = LRD not accepted
+        automatically; such payments are held for you to confirm by hand) */
+const PRICES = {
+  LR: {
+    usd: parseFloat(process.env.PRICE_LR_USD || "2.00"),
+    lrd: parseFloat(process.env.PRICE_LR_LRD || "400"),
+    momoCurrency: process.env.MOMO_CURRENCY_LR || "USD",
+  },
+  // Guinea and Sierra Leone: fill in once you have payment numbers there.
+  GN: { usd: null, lrd: null, momoCurrency: "GNF" },
+  SL: { usd: null, lrd: null, momoCurrency: "SLE" },
+};
+const DEFAULT_COUNTRY = "LR";
+function priceFor(country) {
+  return PRICES[country] || PRICES[DEFAULT_COUNTRY];
+}
+/* Returns "ok", "underpaid", or "unknown" (amount/currency not readable). */
+function checkAmount(country, amount, currency) {
+  const p = priceFor(country);
+  if (amount == null || !currency) return "unknown";
+  const expected = currency === "LRD" ? p.lrd : p.usd;
+  if (expected == null) return "unknown";
+  return amount + 0.001 >= expected ? "ok" : "underpaid";
+}
+
 /* ---------------- tiny JSON-file "database" ---------------- */
 function loadDB() {
   try {
@@ -76,10 +105,16 @@ function requireSecret(expected) {
    best-effort amount, so it works across different SMS wordings/networks. */
 function parseIncomingSms(text) {
   const refMatch = /LEDGER-([A-Z0-9]{6})/i.exec(text || "");
-  const amountMatch = /(?:L\$|LRD|USD|US\$|\$)\s?([\d,]+\.?\d*)/i.exec(text || "");
+  const amountMatch = /(L\$|LRD|USD|US\$|\$)\s?([\d,]+\.?\d*)/i.exec(text || "");
+  let currency = null;
+  if (amountMatch) {
+    const sym = amountMatch[1].toUpperCase();
+    currency = sym === "L$" || sym === "LRD" ? "LRD" : "USD";
+  }
   return {
     ref: refMatch ? refMatch[1].toUpperCase() : null,
-    amount: amountMatch ? parseFloat(amountMatch[1].replace(/,/g, "")) : null,
+    amount: amountMatch ? parseFloat(amountMatch[2].replace(/,/g, "")) : null,
+    currency,
     raw: text || "",
   };
 }
@@ -91,6 +126,13 @@ function genRef() {
    ROUTES
    ================================================================== */
 
+// Current price — the app can show this so the banner always matches the server.
+app.get("/api/price", (req, res) => {
+  const country = String(req.query.country || DEFAULT_COUNTRY).toUpperCase();
+  const p = priceFor(country);
+  res.json({ ok: true, country: PRICES[country] ? country : DEFAULT_COUNTRY, usd: p.usd, lrd: p.lrd, days: SUBSCRIPTION_DAYS });
+});
+
 // Health check — visit this URL in a browser to confirm the server is alive.
 app.get("/", (req, res) => {
   res.json({ ok: true, service: "The Ledger payment backend", time: new Date().toISOString() });
@@ -98,11 +140,14 @@ app.get("/", (req, res) => {
 
 /* ---- 1. PWA registers a new install and gets a reference code ---- */
 app.post("/api/register", (req, res) => {
+  const requested = String(req.body?.country || DEFAULT_COUNTRY).toUpperCase();
+  const country = PRICES[requested] ? requested : DEFAULT_COUNTRY;
   const db = loadDB();
   let ref = genRef();
   while (db[ref]) ref = genRef(); // avoid the rare collision
   db[ref] = {
     createdAt: today(),
+    country,
     paid: false,
     paidAt: null,
     renewedUntil: null,
@@ -110,7 +155,8 @@ app.post("/api/register", (req, res) => {
     lastRawSms: null,
   };
   saveDB(db);
-  res.json({ ok: true, ref: `LEDGER-${ref}` });
+  const p = priceFor(country);
+  res.json({ ok: true, ref: `LEDGER-${ref}`, country, priceUsd: p.usd, priceLrd: p.lrd });
 });
 
 /* ---- 2. PWA polls this to check if payment has landed ---- */
@@ -133,7 +179,7 @@ app.get("/api/status/:ref", (req, res) => {
    SMS-forwarder app sends. */
 app.post("/api/sms-webhook", requireSecret(process.env.SMS_WEBHOOK_SECRET), (req, res) => {
   const text = typeof req.body === "string" ? req.body : req.body?.text || req.body?.message || "";
-  const { ref, amount, raw } = parseIncomingSms(text);
+  const { ref, amount, currency, raw } = parseIncomingSms(text);
 
   if (!ref) {
     // Not every SMS is a payment (balance alerts, promos, etc.) — that's fine.
@@ -146,16 +192,30 @@ app.post("/api/sms-webhook", requireSecret(process.env.SMS_WEBHOOK_SECRET), (req
     return res.json({ ok: true, matched: false, reason: `Reference ${ref} not found — may be a typo or old code` });
   }
 
+  record.lastAmount = amount;
+  record.lastCurrency = currency;
+  record.lastRawSms = raw;
+
+  const check = checkAmount(record.country || DEFAULT_COUNTRY, amount, currency);
+  if (check !== "ok") {
+    // Don't unlock. Keep the details so you can review and use /api/mark-paid if it's genuine.
+    record.pendingReview = { reason: check, amount, currency, at: today() };
+    db[ref] = record;
+    saveDB(db);
+    const p = priceFor(record.country || DEFAULT_COUNTRY);
+    console.log(`⚠️  LEDGER-${ref}: payment NOT unlocked (${check}) — got ${currency || "?"} ${amount ?? "?"}, expected USD ${p.usd}${p.lrd ? ` or LRD ${p.lrd}` : ""}`);
+    return res.json({ ok: true, matched: true, unlocked: false, reason: check, ref: `LEDGER-${ref}` });
+  }
+
   record.paid = true;
   record.paidAt = today();
   record.renewedUntil = addDays(today(), SUBSCRIPTION_DAYS);
-  record.lastAmount = amount;
-  record.lastRawSms = raw;
+  delete record.pendingReview;
   db[ref] = record;
   saveDB(db);
 
   console.log(`✅ Payment matched for LEDGER-${ref} — active until ${record.renewedUntil}`);
-  res.json({ ok: true, matched: true, ref: `LEDGER-${ref}`, renewedUntil: record.renewedUntil });
+  res.json({ ok: true, matched: true, unlocked: true, ref: `LEDGER-${ref}`, renewedUntil: record.renewedUntil });
 });
 
 /* ---- 4. Manual/admin override — mark a reference paid by hand ----
@@ -203,8 +263,14 @@ app.post("/api/momo/request-to-pay", async (req, res) => {
       error: "MTN MoMo isn't set up yet. Fill in MOMO_SUBSCRIPTION_KEY, MOMO_API_USER, and MOMO_API_KEY in .env once your production access is approved. Until then, use the SMS-forwarding method — it already works.",
     });
   }
-  const { phoneNumber, ref, amount, currency } = req.body || {};
+  // Amount and currency come from the server's PRICES, not from the request.
+  const { phoneNumber, ref } = req.body || {};
   if (!phoneNumber || !ref) return res.status(400).json({ ok: false, error: "phoneNumber and ref are required" });
+  const refCode = ref.replace(/^LEDGER-/i, "").toUpperCase();
+  const country = loadDB()[refCode]?.country || DEFAULT_COUNTRY;
+  const p = priceFor(country);
+  const amount = p.momoCurrency === "LRD" ? p.lrd : p.usd;
+  if (amount == null) return res.status(400).json({ ok: false, error: `No price set for ${country} in ${p.momoCurrency}` });
 
   try {
     const token = await getMomoAccessToken();
@@ -219,8 +285,8 @@ app.post("/api/momo/request-to-pay", async (req, res) => {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        amount: String(amount || "0.50"),
-        currency: currency || "USD",
+        amount: amount.toFixed(2),
+        currency: p.momoCurrency,
         externalId: ref,
         payer: { partyIdType: "MSISDN", partyId: phoneNumber },
         payerMessage: "The Ledger monthly subscription",
@@ -267,5 +333,6 @@ app.post("/api/momo/callback", (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`The Ledger payment backend running on port ${PORT}`);
+  console.log(`Liberia price: USD ${PRICES.LR.usd}${PRICES.LR.lrd ? ` / LRD ${PRICES.LR.lrd}` : " (LRD not auto-accepted)"}`);
   console.log(`MTN MoMo configured: ${momoConfigured() ? "yes" : "no (SMS-forwarding is active instead)"}`);
 });

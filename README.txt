@@ -60,7 +60,7 @@ PART 2 — Set up the SMS-forwarder phone
    (Some apps call this field "message" instead of "text" — the server
    accepts either.)
 4. Send yourself a test payment with a fake reference (e.g. text
-   "test LEDGER-ABC123 USD 0.50" to that phone) and confirm you see
+   "test LEDGER-ABC123 USD 2.00" to that phone) and confirm you see
    "✅ Payment matched" in your server's logs.
 
 Keep this phone charged and connected to the internet — if it goes offline,

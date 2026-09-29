@@ -331,6 +331,96 @@ app.post("/api/momo/callback", (req, res) => {
   res.sendStatus(200); // MTN just needs a 200 — no body required
 });
 
+/* ==================================================================
+   STAFF ACCESS REQUESTS — lets a staff member on their own phone ask the
+   owner for access, and the owner's phone see and answer it.
+   Each shop is identified by shopId + shopKey, which the app derives from
+   the ledger's own encryption key, so only phones that can open that
+   ledger (owner or staff PIN) know them. The server never sees any
+   business records — only the staff member's name and the request status.
+   ================================================================== */
+const STAFF_DB_PATH = path.join(__dirname, "data", "staff-requests.json");
+function loadStaffDB() {
+  try {
+    if (!fs.existsSync(STAFF_DB_PATH)) return {};
+    return JSON.parse(fs.readFileSync(STAFF_DB_PATH, "utf8"));
+  } catch (e) {
+    console.error("Couldn't read staff requests, starting fresh:", e.message);
+    return {};
+  }
+}
+function saveStaffDB(db) {
+  fs.mkdirSync(path.dirname(STAFF_DB_PATH), { recursive: true });
+  fs.writeFileSync(STAFF_DB_PATH, JSON.stringify(db, null, 2));
+}
+const sha256 = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
+// Returns the shop record (creating it on first use) or null if the key is wrong.
+function openShop(db, shopId, shopKey) {
+  if (!/^[a-f0-9]{24}$/.test(shopId || "") || !/^[a-f0-9]{64}$/.test(shopKey || "")) return null;
+  const keyHash = sha256(shopKey);
+  if (!db[shopId]) db[shopId] = { keyHash, requests: {} };
+  if (db[shopId].keyHash !== keyHash) return null;
+  // tidy: forget answered requests older than 30 days
+  const cutoff = Date.now() - 30 * 24 * 3600 * 1000;
+  for (const [id, r] of Object.entries(db[shopId].requests)) {
+    if (r.status !== "pending" && Date.parse(r.decidedAt || r.at) < cutoff) delete db[shopId].requests[id];
+  }
+  return db[shopId];
+}
+
+// Staff phone sends a request
+app.post("/api/staff/request", (req, res) => {
+  const { shopId, shopKey, requestId, name } = req.body || {};
+  const db = loadStaffDB();
+  const shop = openShop(db, shopId, shopKey);
+  if (!shop) return res.status(401).json({ ok: false, error: "Unknown shop" });
+  const cleanName = String(name || "").trim().slice(0, 60);
+  if (!/^[A-Za-z0-9]{6,20}$/.test(requestId || "") || !cleanName) return res.status(400).json({ ok: false, error: "requestId and name are required" });
+  const pendingCount = Object.values(shop.requests).filter((r) => r.status === "pending").length;
+  if (!shop.requests[requestId] && pendingCount >= 50) return res.status(429).json({ ok: false, error: "Too many pending requests" });
+  if (!shop.requests[requestId]) {
+    shop.requests[requestId] = { id: requestId, name: cleanName, status: "pending", at: new Date().toISOString() };
+    saveStaffDB(db);
+  }
+  res.json({ ok: true, status: shop.requests[requestId].status });
+});
+
+// Owner phone asks for pending requests
+app.post("/api/staff/list", (req, res) => {
+  const { shopId, shopKey } = req.body || {};
+  const db = loadStaffDB();
+  const shop = openShop(db, shopId, shopKey);
+  if (!shop) return res.status(401).json({ ok: false, error: "Unknown shop" });
+  saveStaffDB(db);
+  const requests = Object.values(shop.requests).filter((r) => r.status === "pending");
+  res.json({ ok: true, requests });
+});
+
+// Owner phone approves or declines
+app.post("/api/staff/decide", (req, res) => {
+  const { shopId, shopKey, requestId, approve } = req.body || {};
+  const db = loadStaffDB();
+  const shop = openShop(db, shopId, shopKey);
+  if (!shop) return res.status(401).json({ ok: false, error: "Unknown shop" });
+  const r = shop.requests[requestId];
+  if (!r) return res.status(404).json({ ok: false, error: "Unknown request" });
+  r.status = approve ? "approved" : "declined";
+  r.decidedAt = new Date().toISOString();
+  saveStaffDB(db);
+  res.json({ ok: true, status: r.status });
+});
+
+// Staff phone checks whether it was approved
+app.post("/api/staff/status", (req, res) => {
+  const { shopId, shopKey, requestId } = req.body || {};
+  const db = loadStaffDB();
+  const shop = openShop(db, shopId, shopKey);
+  if (!shop) return res.status(401).json({ ok: false, error: "Unknown shop" });
+  const r = shop.requests[requestId];
+  if (!r) return res.json({ ok: true, status: "unknown" });
+  res.json({ ok: true, status: r.status, name: r.name });
+});
+
 app.listen(PORT, () => {
   console.log(`The Ledger payment backend running on port ${PORT}`);
   console.log(`Liberia price: USD ${PRICES.LR.usd}${PRICES.LR.lrd ? ` / LRD ${PRICES.LR.lrd}` : " (LRD not auto-accepted)"}`);

@@ -88,3 +88,22 @@ the app itself (index.html) to use it — generating each install its own
 LEDGER-XXXXXX code, showing it on the subscription screen, and adding a
 "Check payment" button that unlocks automatically once your server confirms
 the payment landed.
+
+
+Live sync between owner and staff phones
+-------------------------------------------
+Endpoints: POST /api/sync/push and POST /api/sync/pull.
+Every entry is encrypted on the phone with the ledger's own key before it
+is sent, so this server only stores scrambled text. It cannot read sales,
+names or amounts.
+
+Storage:
+- Default: files in data/sync/. Render's free plan wipes these when the
+  server restarts. The phones notice and re-send everything automatically,
+  but entries from a phone that stays closed won't reach others until that
+  phone opens the app again.
+- Recommended: a free Upstash Redis database, which survives restarts.
+  1. Sign up at upstash.com → Create Database (Redis, free plan).
+  2. Copy "UPSTASH_REDIS_REST_URL" and "UPSTASH_REDIS_REST_TOKEN".
+  3. Render → your service → Environment → add both → Save (it redeploys).
+  4. The Render log then says: "Live sync storage: Upstash Redis".

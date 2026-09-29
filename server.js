@@ -30,7 +30,7 @@ const fetch = require("node-fetch");
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "6mb" })); // live sync sends batches of encrypted entries
 app.use(express.text({ type: ["text/plain", "text/*"] })); // some SMS-forwarder apps POST plain text
 
 const PORT = process.env.PORT || 3000;
@@ -421,8 +421,124 @@ app.post("/api/staff/status", (req, res) => {
   res.json({ ok: true, status: r.status, name: r.name });
 });
 
+/* ==================================================================
+   LIVE SYNC between the owner's and staff phones
+   ------------------------------------------------------------------
+   Each entry is encrypted ON THE PHONE with the ledger's own key before
+   it is sent, so this server only ever sees scrambled text plus an entry
+   id and a time. It cannot read sales, names or amounts.
+   Storage: set UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN (free at
+   upstash.com) to keep data safe across restarts. Without them it uses
+   local files, which Render's free plan wipes on restart — phones then
+   notice (the "epoch" changes) and re-send everything automatically.
+   ================================================================== */
+const SYNC_DIR = path.join(__dirname, "data", "sync");
+const REDIS_URL = (process.env.UPSTASH_REDIS_REST_URL || "").replace(/\/+$/, "");
+const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || "";
+const USE_REDIS = !!(REDIS_URL && REDIS_TOKEN);
+const SYNC_MAX_ITEMS_PER_SHOP = 60000;
+const syncCache = new Map(); // shopId -> shop (kept in memory, saved in the background)
+const syncSaveTimers = new Map();
+
+async function redisCmd(args) {
+  const r = await fetch(REDIS_URL, {
+    method: "POST",
+    headers: { Authorization: "Bearer " + REDIS_TOKEN, "Content-Type": "application/json" },
+    body: JSON.stringify(args),
+  });
+  const j = await r.json();
+  if (j.error) throw new Error(j.error);
+  return j.result;
+}
+async function syncStoreGet(shopId) {
+  if (USE_REDIS) {
+    const v = await redisCmd(["GET", "ledger-sync:" + shopId]);
+    return v ? JSON.parse(v) : null;
+  }
+  const f = path.join(SYNC_DIR, shopId + ".json");
+  if (!fs.existsSync(f)) return null;
+  return JSON.parse(fs.readFileSync(f, "utf8"));
+}
+async function syncStorePut(shopId, shop) {
+  const text = JSON.stringify(shop);
+  if (USE_REDIS) return redisCmd(["SET", "ledger-sync:" + shopId, text]);
+  fs.mkdirSync(SYNC_DIR, { recursive: true });
+  fs.writeFileSync(path.join(SYNC_DIR, shopId + ".json"), text);
+}
+function syncSaveSoon(shopId) {
+  if (syncSaveTimers.has(shopId)) return;
+  syncSaveTimers.set(shopId, setTimeout(async () => {
+    syncSaveTimers.delete(shopId);
+    try { await syncStorePut(shopId, syncCache.get(shopId)); }
+    catch (e) { console.error("Sync save failed for", shopId, e.message); syncSaveSoon(shopId); }
+  }, 800));
+}
+// Returns the shop (creating it on first use) or null if the key is wrong.
+async function openSyncShop(shopId, shopKey) {
+  if (!/^[a-f0-9]{24}$/.test(shopId || "") || !/^[a-f0-9]{64}$/.test(shopKey || "")) return null;
+  const keyHash = sha256(shopKey);
+  let shop = syncCache.get(shopId);
+  if (!shop) {
+    shop = await syncStoreGet(shopId);
+    if (!shop) { shop = { keyHash, epoch: crypto.randomBytes(8).toString("hex"), seq: 0, items: {} }; syncSaveSoon(shopId); }
+    syncCache.set(shopId, shop);
+  }
+  if (shop.keyHash !== keyHash) return null;
+  return shop;
+}
+
+// Phone sends new or changed entries (already encrypted)
+app.post("/api/sync/push", async (req, res) => {
+  try {
+    const { shopId, shopKey, items } = req.body || {};
+    const shop = await openSyncShop(shopId, shopKey);
+    if (!shop) return res.status(401).json({ ok: false, error: "Unknown shop" });
+    if (!Array.isArray(items) || items.length > 400) return res.status(400).json({ ok: false, error: "Send 1–400 items at a time" });
+    let stored = 0;
+    for (const it of items) {
+      if (!it || typeof it.r !== "string" || it.r.length > 80 || typeof it.u !== "string" || it.u.length > 40) continue;
+      if (typeof it.iv !== "string" || it.iv.length > 40 || typeof it.d !== "string" || it.d.length > 40000) continue;
+      const old = shop.items[it.r];
+      if (old && old.u >= it.u) continue; // server already has this version or a newer one
+      if (!old && Object.keys(shop.items).length >= SYNC_MAX_ITEMS_PER_SHOP) return res.status(413).json({ ok: false, error: "Shop is full" });
+      shop.seq += 1;
+      shop.items[it.r] = { u: it.u, s: shop.seq, iv: it.iv, d: it.d };
+      stored++;
+    }
+    if (stored) syncSaveSoon(shopId);
+    res.json({ ok: true, epoch: shop.epoch, seq: shop.seq, stored });
+  } catch (e) {
+    console.error("sync/push:", e.message);
+    res.status(500).json({ ok: false, error: "Server error" });
+  }
+});
+
+// Phone asks for everything that changed since it last asked
+app.post("/api/sync/pull", async (req, res) => {
+  try {
+    const { shopId, shopKey } = req.body || {};
+    const since = Math.max(0, parseInt((req.body || {}).since, 10) || 0);
+    const shop = await openSyncShop(shopId, shopKey);
+    if (!shop) return res.status(401).json({ ok: false, error: "Unknown shop" });
+    const LIMIT = 500;
+    const changed = Object.entries(shop.items).filter(([, v]) => v.s > since).sort((a, b) => a[1].s - b[1].s);
+    const page = changed.slice(0, LIMIT);
+    res.json({
+      ok: true,
+      epoch: shop.epoch,
+      seq: page.length ? page[page.length - 1][1].s : shop.seq,
+      more: changed.length > LIMIT,
+      items: page.map(([r, v]) => ({ r, u: v.u, iv: v.iv, d: v.d })),
+    });
+  } catch (e) {
+    console.error("sync/pull:", e.message);
+    res.status(500).json({ ok: false, error: "Server error" });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`The Ledger payment backend running on port ${PORT}`);
   console.log(`Liberia price: USD ${PRICES.LR.usd}${PRICES.LR.lrd ? ` / LRD ${PRICES.LR.lrd}` : " (LRD not auto-accepted)"}`);
   console.log(`MTN MoMo configured: ${momoConfigured() ? "yes" : "no (SMS-forwarding is active instead)"}`);
+  console.log(`Live sync storage: ${USE_REDIS ? "Upstash Redis (kept across restarts)" : "local files (wiped when Render restarts; phones re-send automatically)"}`);
 });

@@ -107,3 +107,12 @@ Storage:
   2. Copy "UPSTASH_REDIS_REST_URL" and "UPSTASH_REDIS_REST_TOKEN".
   3. Render → your service → Environment → add both → Save (it redeploys).
   4. The Render log then says: "Live sync storage: Upstash Redis".
+
+
+Recovery codes (get a business back on a new phone)
+------------------------------------------------------
+Endpoints: POST /api/recovery/save, /api/recovery/get, /api/recovery/delete.
+The owner's phone stores the ledger key LOCKED with the owner's secret
+recovery code. The server only sees a fingerprint of the code, never the
+code itself, so it cannot open anything. Uses the same storage as live sync —
+set up Upstash (above) so recovery data survives Render restarts.

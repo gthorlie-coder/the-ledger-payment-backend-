@@ -536,6 +536,62 @@ app.post("/api/sync/pull", async (req, res) => {
   }
 });
 
+/* ==================================================================
+   RECOVERY: lets an owner get their business back on a new phone
+   ------------------------------------------------------------------
+   Stores the ledger key LOCKED with the owner's secret recovery code.
+   The server never sees the code — only a fingerprint (id + key hash) —
+   so it can't open anything. Uses the same storage as live sync.
+   ================================================================== */
+const RECOVERY_DIR = path.join(__dirname, "data", "recovery");
+async function recoveryGet(id) {
+  if (USE_REDIS) { const v = await redisCmd(["GET", "ledger-recovery:" + id]); return v ? JSON.parse(v) : null; }
+  const f = path.join(RECOVERY_DIR, id + ".json");
+  return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, "utf8")) : null;
+}
+async function recoveryPut(id, rec) {
+  if (USE_REDIS) return redisCmd(["SET", "ledger-recovery:" + id, JSON.stringify(rec)]);
+  fs.mkdirSync(RECOVERY_DIR, { recursive: true });
+  fs.writeFileSync(path.join(RECOVERY_DIR, id + ".json"), JSON.stringify(rec));
+}
+async function recoveryDel(id) {
+  if (USE_REDIS) return redisCmd(["DEL", "ledger-recovery:" + id]);
+  const f = path.join(RECOVERY_DIR, id + ".json");
+  if (fs.existsSync(f)) fs.unlinkSync(f);
+}
+function validRecoveryIds(b) { return b && /^[a-f0-9]{24}$/.test(b.id || "") && /^[a-f0-9]{64}$/.test(b.key || ""); }
+
+app.post("/api/recovery/save", async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!validRecoveryIds(b) || !b.blob || typeof b.blob.iv !== "string" || typeof b.blob.data !== "string" || b.blob.data.length > 8000)
+      return res.status(400).json({ ok: false, error: "Bad request" });
+    const keyHash = sha256(b.key);
+    const old = await recoveryGet(b.id);
+    if (old && old.keyHash !== keyHash) return res.status(401).json({ ok: false, error: "Wrong key" });
+    await recoveryPut(b.id, { keyHash, blob: { iv: b.blob.iv, data: b.blob.data }, at: new Date().toISOString() });
+    res.json({ ok: true });
+  } catch (e) { console.error("recovery/save:", e.message); res.status(500).json({ ok: false, error: "Server error" }); }
+});
+app.post("/api/recovery/get", async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!validRecoveryIds(b)) return res.status(400).json({ ok: false, error: "Bad request" });
+    const rec = await recoveryGet(b.id);
+    if (!rec || rec.keyHash !== sha256(b.key)) return res.status(404).json({ ok: false, error: "Not found" });
+    res.json({ ok: true, blob: rec.blob, at: rec.at });
+  } catch (e) { console.error("recovery/get:", e.message); res.status(500).json({ ok: false, error: "Server error" }); }
+});
+app.post("/api/recovery/delete", async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!validRecoveryIds(b)) return res.status(400).json({ ok: false, error: "Bad request" });
+    const rec = await recoveryGet(b.id);
+    if (rec && rec.keyHash === sha256(b.key)) await recoveryDel(b.id);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, error: "Server error" }); }
+});
+
 app.listen(PORT, () => {
   console.log(`The Ledger payment backend running on port ${PORT}`);
   console.log(`Liberia price: USD ${PRICES.LR.usd}${PRICES.LR.lrd ? ` / LRD ${PRICES.LR.lrd}` : " (LRD not auto-accepted)"}`);

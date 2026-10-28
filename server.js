@@ -32,6 +32,7 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "6mb" })); // live sync sends batches of encrypted entries
 app.use(express.text({ type: ["text/plain", "text/*"] })); // some SMS-forwarder apps POST plain text
+app.use(express.urlencoded({ extended: false, limit: "1mb" })); // …and some post web-form style
 
 const PORT = process.env.PORT || 3000;
 const DB_PATH = path.join(__dirname, "data", "subscriptions.json");
@@ -132,8 +133,8 @@ function today() {
 }
 function requireSecret(expected) {
   return (req, res, next) => {
-    const provided = req.get("Authorization")?.replace(/^Bearer\s+/i, "") || req.body?.secret || req.query.secret;
-    if (!expected || provided !== expected) {
+    const provided = String(req.get("Authorization")?.replace(/^Bearer\s+/i, "") || (req.body && typeof req.body === "object" ? req.body.secret : "") || req.query.secret || "").trim();
+    if (!expected || provided !== String(expected).trim()) {
       return res.status(401).json({ ok: false, error: "Unauthorized" });
     }
     next();
@@ -274,11 +275,22 @@ function extendSubscription(record) {
    text body. The secret can be sent as "Authorization: Bearer …" or ?secret=…
    Finds the customer by LEDGER-XXXXXX in the message, or else by the
    sender's phone number they entered in the app. */
-app.post("/api/sms-webhook", requireSecret(process.env.SMS_WEBHOOK_SECRET), async (req, res) => {
+// Works with any SMS-forwarder app: GET or POST, JSON, web-form or plain text, any field names.
+function readForwardedSms(req) {
+  const fields = Object.assign({}, req.query || {}, (req.body && typeof req.body === "object") ? req.body : {});
+  delete fields.secret;
+  const pick = (keys) => { for (const k of Object.keys(fields)) if (keys.includes(k.toLowerCase()) && fields[k] != null && String(fields[k]).trim()) return String(fields[k]); return ""; };
+  let text = typeof req.body === "string" ? req.body : pick(["text", "message", "body", "content", "msg", "sms", "smstext", "message_body", "messagebody"]);
+  if (!text) { // unknown app: use every text value it sent
+    const all = []; const walk = (v) => { if (v == null) return; if (typeof v === "object") Object.values(v).forEach(walk); else all.push(String(v)); };
+    walk(fields); text = all.join("\n");
+  }
+  const sender = pick(["from", "sender", "phone", "number", "address", "originator", "src", "msisdn"]);
+  return { text, sender };
+}
+app.all("/api/sms-webhook", requireSecret(process.env.SMS_WEBHOOK_SECRET), async (req, res) => {
   try {
-    const b = req.body;
-    const text = typeof b === "string" ? b : (b?.text || b?.message || b?.body || b?.content || b?.msg || "");
-    const sender = typeof b === "object" && b ? String(b.from || b.sender || b.phone || "") : "";
+    const { text, sender } = readForwardedSms(req);
     const parsed = parseIncomingSms(text);
     let ref = parsed.ref, record = ref ? await subGet(ref) : null, how = record ? "reference" : null;
     if (!record) {
@@ -292,6 +304,7 @@ app.post("/api/sms-webhook", requireSecret(process.env.SMS_WEBHOOK_SECRET), asyn
     if (!record) {
       // Not every SMS is a payment (balance alerts, promos…). Keep it on the admin page in case it was one.
       if (parsed.amount != null) await logPayment({ result: "not matched", amount: parsed.amount, currency: parsed.currency, phones: parsed.phones, sender, sms: short, refInSms: parsed.ref });
+      else await logPayment({ result: "SMS received (not a payment)", sender, sms: parsed.raw.slice(0, 80) }); // shows on /admin, handy to test the forwarder phone
       return res.json({ ok: true, matched: false, reason: parsed.ref ? `Reference ${parsed.ref} not found` : "No LEDGER- reference or known customer number in this message" });
     }
     const h = sha256(parsed.raw);

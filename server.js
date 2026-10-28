@@ -59,6 +59,15 @@ function priceFor(country) {
   return PRICES[country] || PRICES[DEFAULT_COUNTRY];
 }
 /* Returns "ok", "underpaid", or "unknown" (amount/currency not readable). */
+const MAX_MONTHS = 12; // a customer can pay for up to 12 months at once
+function clampMonths(m) { m = Math.floor(Number(m) || 1); return Math.min(MAX_MONTHS, Math.max(1, m)); }
+/* How many whole months an amount pays for (US$6 → 3 months). */
+function monthsPaidFor(country, amount, currency) {
+  const p = priceFor(country);
+  const each = currency === "LRD" ? p.lrd : p.usd;
+  if (!each || amount == null) return 1;
+  return clampMonths(Math.floor((amount + 0.001) / each));
+}
 function checkAmount(country, amount, currency) {
   const p = priceFor(country);
   if (amount == null || !currency) return "unknown";
@@ -180,7 +189,7 @@ app.get("/api/price", (req, res) => {
 
 // Health check — visit this URL in a browser to confirm the server is alive.
 // Health check in plain words — open /api/health in any browser.
-const SERVER_VERSION = "v31";
+const SERVER_VERSION = "v32";
 app.get("/api/health", async (req, res) => {
   const out = { ok: true, version: SERVER_VERSION, time: new Date().toISOString(),
     storage: USE_REDIS ? "Upstash Redis" : "local files only (records are LOST when Render restarts — add UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN)",
@@ -260,11 +269,13 @@ app.get("/api/status/:ref", async (req, res) => {
 });
 
 // Adds 30 days — from today, or from the current end date if the customer renews early.
-function extendSubscription(record) {
+function extendSubscription(record, months) {
+  months = clampMonths(months);
   const base = record.renewedUntil && record.renewedUntil > today() ? record.renewedUntil : today();
   record.paid = true;
   record.paidAt = today();
-  record.renewedUntil = addDays(base, SUBSCRIPTION_DAYS);
+  record.renewedUntil = addDays(base, SUBSCRIPTION_DAYS * months);
+  record.lastMonths = months;
   delete record.pendingReview;
   return record;
 }
@@ -322,9 +333,10 @@ app.all("/api/sms-webhook", requireSecret(process.env.SMS_WEBHOOK_SECRET), async
       console.log(`⚠️  LEDGER-${ref}: payment NOT unlocked (${check}) — got ${parsed.currency || "?"} ${parsed.amount ?? "?"}, expected USD ${p.usd}${p.lrd ? ` or LRD ${p.lrd}` : ""}`);
       return res.json({ ok: true, matched: true, unlocked: false, reason: check, ref: `LEDGER-${ref}` });
     }
-    extendSubscription(record);
+    const months = monthsPaidFor(record.country || DEFAULT_COUNTRY, parsed.amount, parsed.currency);
+    extendSubscription(record, months);
     await subPut(ref, record);
-    await logPayment({ result: "unlocked", ref: `LEDGER-${ref}`, how, amount: parsed.amount, currency: parsed.currency, until: record.renewedUntil, sms: short });
+    await logPayment({ result: "unlocked" + (months > 1 ? ` (${months} months)` : ""), ref: `LEDGER-${ref}`, how, amount: parsed.amount, currency: parsed.currency, until: record.renewedUntil, sms: short });
     console.log(`✅ Payment matched for LEDGER-${ref} (${how}) — active until ${record.renewedUntil}`);
     res.json({ ok: true, matched: true, unlocked: true, how, ref: `LEDGER-${ref}`, renewedUntil: record.renewedUntil });
   } catch (e) { console.error("sms-webhook:", e.message); res.status(500).json({ ok: false, error: "Server error" }); }
@@ -333,18 +345,19 @@ app.all("/api/sms-webhook", requireSecret(process.env.SMS_WEBHOOK_SECRET), async
 /* ---- 4. Manual override — mark a reference paid by hand ----
    Useful if you confirm a payment yourself (e.g. saw it in your Orange Money
    app) and the SMS-forwarder missed it for some reason. */
-async function markPaidByHand(refInput) {
+async function markPaidByHand(refInput, monthsInput) {
   const code = String(refInput || "").replace(/^LEDGER-/i, "").toUpperCase();
   const rec = await subGet(code);
   if (!rec) return null;
-  extendSubscription(rec);
+  const months = clampMonths(monthsInput);
+  extendSubscription(rec, months);
   await subPut(code, rec);
-  await logPayment({ result: "unlocked by hand", ref: `LEDGER-${code}`, until: rec.renewedUntil });
-  return { ref: `LEDGER-${code}`, renewedUntil: rec.renewedUntil };
+  await logPayment({ result: "unlocked by hand" + (months > 1 ? ` (${months} months)` : ""), ref: `LEDGER-${code}`, until: rec.renewedUntil });
+  return { ref: `LEDGER-${code}`, renewedUntil: rec.renewedUntil, months };
 }
 app.post("/api/mark-paid", requireSecret(process.env.SMS_WEBHOOK_SECRET), async (req, res) => {
   try {
-    const r = await markPaidByHand(req.body?.ref);
+    const r = await markPaidByHand(req.body?.ref, req.body?.months);
     if (!r) return res.status(404).json({ ok: false, error: "Unknown reference code" });
     res.json(Object.assign({ ok: true }, r));
   } catch (e) { res.status(500).json({ ok: false, error: "Server error" }); }
@@ -969,7 +982,7 @@ app.get("/api/admin/payments", async (req, res) => {
 app.post("/api/admin/mark-paid", async (req, res) => {
   if (!ADMIN_KEY) return res.status(503).json({ ok: false, error: "ADMIN_KEY is not set on the server yet" });
   if (!adminOk(req)) return res.status(401).json({ ok: false, error: "Wrong admin key" });
-  try { const r = await markPaidByHand(req.body?.ref); if (!r) return res.status(404).json({ ok: false, error: "Unknown reference code" }); res.json(Object.assign({ ok: true }, r)); }
+  try { const r = await markPaidByHand(req.body?.ref, req.body?.months); if (!r) return res.status(404).json({ ok: false, error: "Unknown reference code" }); res.json(Object.assign({ ok: true }, r)); }
   catch (e) { res.status(500).json({ ok: false, error: "Server error" }); }
 });
 app.get("/admin", (req, res) => {
@@ -1011,7 +1024,7 @@ input{font-size:15px;padding:10px;border:1px solid var(--line);border-radius:6px
     <div class="card"><b>App versions in use</b><p class="muted">Shows who still needs to update.</p><div class="chips" id="ver"></div></div>
     <div class="card"><b>Browsers</b><div class="chips" id="br"></div><p style="margin:12px 0 0"><b>Installed vs browser</b></p><div class="chips" id="ins" style="margin-top:8px"></div></div>
     <div class="card"><b>💰 Payments</b><p class="muted" id="pay-note">Orange Money messages forwarded to the server, newest first.</p>
-      <div style="display:flex;gap:8px;margin:8px 0 12px;"><input id="mp-ref" placeholder="LEDGER-XXXXXX"><button id="mp-go" style="white-space:nowrap">Unlock by hand</button></div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 12px;"><input id="mp-ref" placeholder="LEDGER-XXXXXX" style="flex:1;min-width:170px"><select id="mp-months" style="padding:8px;border:1px solid var(--line);border-radius:6px;font-size:14px"><option value="1">1 month</option><option value="2">2 months</option><option value="3">3 months</option><option value="6">6 months</option><option value="12">12 months</option></select><button id="mp-go" style="white-space:nowrap">Unlock by hand</button></div>
       <div class="err" id="mp-msg"></div>
       <div style="overflow-x:auto"><table id="pay"></table></div></div>
     <p class="muted" id="gen"></p><button id="refresh">↻ Refresh</button> <button id="logout" style="background:#fff;color:var(--ink);border:1px solid var(--line)">Forget key</button>
@@ -1050,8 +1063,8 @@ async function loadPayments(){
   $("pay").innerHTML='<tr><th>When</th><th>Result</th><th>Code / number</th><th>Amount</th></tr>'+(d.log.map(e=>'<tr><td>'+esc(new Date(e.at).toLocaleString())+'</td><td style="text-align:left">'+esc(e.result)+(e.until?'<div class="muted">until '+esc(e.until)+'</div>':'')+'</td><td style="text-align:left">'+esc(e.ref||"")+(e.how?'<div class="muted">'+esc(e.how)+'</div>':'')+(e.phones&&e.phones.length?'<div class="muted">from '+esc(e.phones.join(", "))+'</div>':'')+(e.sms?'<div class="muted" style="max-width:340px;white-space:normal">'+esc(e.sms)+'</div>':'')+'</td><td>'+esc(e.amount!=null?(e.currency||"")+" "+e.amount:"")+'</td></tr>').join("")||'<tr><td colspan="4" class="muted">No payment messages yet.</td></tr>');
 }
 $("mp-go").onclick=async()=>{const key=localStorage.getItem("ledger-admin-key")||"";const ref=$("mp-ref").value.trim();if(!ref)return;
-  let d;try{d=await (await fetch("/api/admin/mark-paid",{method:"POST",headers:{"x-admin-key":key,"Content-Type":"application/json"},body:JSON.stringify({ref})})).json();}catch(e){$("mp-msg").textContent="Could not reach the server.";return;}
-  $("mp-msg").textContent=d.ok?("✓ "+d.ref+" unlocked until "+d.renewedUntil+". The customer taps “Check payment now”."):(d.error||"Error");loadPayments();};
+  let d;try{d=await (await fetch("/api/admin/mark-paid",{method:"POST",headers:{"x-admin-key":key,"Content-Type":"application/json"},body:JSON.stringify({ref,months:Number($("mp-months").value)})})).json();}catch(e){$("mp-msg").textContent="Could not reach the server.";return;}
+  $("mp-msg").textContent=d.ok?("✓ "+d.ref+" unlocked for "+d.months+(d.months>1?" months":" month")+" — until "+d.renewedUntil+". Their app opens by itself in a few seconds."):(d.error||"Error");loadPayments();};
 $("go").onclick=()=>{localStorage.setItem("ledger-admin-key",$("key").value.trim());load();};
 $("key").onkeydown=e=>{if(e.key==="Enter")$("go").click();};
 $("refresh").onclick=load;$("logout").onclick=()=>{localStorage.removeItem("ledger-admin-key");location.reload();};

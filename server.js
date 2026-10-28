@@ -190,7 +190,14 @@ app.get("/api/health", async (req, res) => {
   try {
     if (USE_REDIS) { await redisCmd(["SET", "ledger-health", out.time]); const v = await redisCmd(["GET", "ledger-health"]); out.storageWorking = v === out.time; }
     else out.storageWorking = true;
-  } catch (e) { out.storageWorking = false; out.storageProblem = String(e.message || e).slice(0, 200); out.ok = false; }
+  } catch (e) {
+    let msg = String(e.message || e);
+    if (REDIS_TOKEN) msg = msg.split(REDIS_TOKEN).join("[token hidden]"); // never show the password on a public page
+    msg = msg.replace(/Bearer\s+\S+/g, "Bearer [token hidden]");
+    if (REDIS_TOKEN_HIDDEN) msg = "The token was copied while Upstash showed ******** — click the eye icon on Upstash first, then copy again.";
+    else if (/\b(401|403)\b|unauthori[sz]ed|NOPERM|readonly|read-only/i.test(msg)) msg = "Upstash refused the token. Copy it again from Upstash (make sure \"Read-Only Token\" is OFF). Details: " + msg;
+    out.storageWorking = false; out.storageProblem = msg.slice(0, 300); out.ok = false;
+  }
   out.summary = out.storageWorking ? "✅ Server and storage are working." : "❌ The server can't save to Upstash: " + out.storageProblem;
   res.json(out);
 });
@@ -507,8 +514,16 @@ app.post("/api/staff/status", wrap(async (req, res) => {
    notice (the "epoch" changes) and re-send everything automatically.
    ================================================================== */
 const SYNC_DIR = path.join(__dirname, "data", "sync");
-const REDIS_URL = (process.env.UPSTASH_REDIS_REST_URL || "").replace(/\/+$/, "");
-const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || "";
+// Forgiving: the owner may paste the whole Upstash "REST" box (both lines, with names and quotes)
+// into either setting on Render. We pick out the real URL and token from whatever was pasted.
+const UPSTASH_PASTED = (process.env.UPSTASH_REDIS_REST_URL || "") + "\n" + (process.env.UPSTASH_REDIS_REST_TOKEN || "");
+const REDIS_URL = ((UPSTASH_PASTED.match(/https:\/\/[^\s"'`]+/) || [""])[0]).replace(/\/+$/, "");
+const REDIS_TOKEN = (() => {
+  const named = UPSTASH_PASTED.match(/UPSTASH_REDIS_REST_TOKEN\s*[=:]\s*["'`]?([^"'`\s]+)/);
+  if (named) return named[1];
+  return (process.env.UPSTASH_REDIS_REST_TOKEN || "").trim().replace(/^["'`]+|["'`]+$/g, "");
+})();
+const REDIS_TOKEN_HIDDEN = /^\*+$/.test(REDIS_TOKEN); // copied while Upstash showed ******** instead of the real token
 const USE_REDIS = !!(REDIS_URL && REDIS_TOKEN);
 const SYNC_MAX_ITEMS_PER_SHOP = 300000; // ~100,000 sales plus expenses, stock moves, deletions…
 const SYNC_PAGE_SIZE = 2000;            // entries per saved page (~1.2 MB, well under Upstash's 10 MB request limit)

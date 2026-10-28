@@ -39,29 +39,41 @@ a VPS, etc.). Steps are the same shape everywhere:
 5. Note your server's URL (e.g. https://your-app.onrender.com) — you'll
    need to give this to me so I can wire it into the app itself.
 
-Important: data/subscriptions.json is where payment records live. On some
-free hosting tiers, the filesystem resets on every redeploy — if that
-happens to you, ask me to switch this to a proper hosted database instead
-(a quick change, just needs your host's specifics first).
+Where records live: payment references, staff requests and live sync are
+all kept in Upstash Redis (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN),
+so nothing is lost when Render restarts or redeploys.
+
+Also set on Render (Environment):
+     RECEIVING_NUMBERS       → the number(s) that RECEIVE payments, e.g.
+                                 231771466188   (several: comma-separated)
+                               (default is 231771466188)
 
 
 PART 2 — Set up the SMS-forwarder phone
 ------------------------------------------
-1. Get a basic Android phone (even an old one) and put the SIM that
-   receives your Orange Money / MoMo payments into it.
-2. Install a free SMS-to-webhook forwarder app — search Play Store for
-   "SMS to URL Forwarder" or similar (there are a few free ones; any that
-   let you set a custom URL + a custom header work).
-3. Configure it to POST to:
-     https://your-server-url/api/sms-webhook
-   With this header:
-     Authorization: Bearer <your SMS_WEBHOOK_SECRET value>
-   And the SMS text sent as JSON: {"text": "<the message>"}
-   (Some apps call this field "message" instead of "text" — the server
-   accepts either.)
-4. Send yourself a test payment with a fake reference (e.g. text
-   "test LEDGER-ABC123 USD 2.00" to that phone) and confirm you see
-   "✅ Payment matched" in your server's logs.
+How a payment is found:
+  - The customer types, in the app, the phone number they pay FROM.
+  - Orange Money sends YOUR phone an SMS like
+      "You have received USD 2.00 from 0777123456 ..."
+  - The forwarder app sends that SMS to this server, which finds the
+    customer by that number (or by a LEDGER-XXXXXX code if it appears in
+    the SMS), checks the amount (US$2 or L$400), and unlocks their app.
+    Their app checks every 15 seconds and opens by itself.
+
+1. Use an Android phone with the SIM that RECEIVES the Orange Money
+   payments (+231 77 146 6188). Keep it charged and on the internet.
+2. Install a free SMS-to-webhook forwarder from the Play Store, e.g.
+   "SMS to URL Forwarder" (any app that can send each SMS to a URL works).
+3. Set the URL to (put your real secret instead of THE-SECRET):
+     https://the-ledger-payment-backend.onrender.com/api/sms-webhook?secret=THE-SECRET
+   Method POST, body JSON:  {"from":"%from%","text":"%text%"}
+   (or use the header  Authorization: Bearer THE-SECRET  instead of ?secret=)
+4. If the app has a filter, forward only SMS from Orange Money.
+5. Test: open https://the-ledger-payment-backend.onrender.com/admin →
+   "Payments". Every forwarded payment SMS appears there with its result:
+     unlocked / needs review (underpaid) / not matched.
+   Anything not matched can be unlocked by hand: type the customer's
+   LEDGER-XXXXXX code (shown on their screen) and tap "Unlock by hand".
 
 Keep this phone charged and connected to the internet — if it goes offline,
 incoming payment SMS won't get forwarded until it's back online.
@@ -116,3 +128,14 @@ The owner's phone stores the ledger key LOCKED with the owner's secret
 recovery code. The server only sees a fingerprint of the code, never the
 code itself, so it cannot open anything. Uses the same storage as live sync —
 set up Upstash (above) so recovery data survives Render restarts.
+
+
+Builder dashboard — active users per country
+-----------------------------------------------
+Open https://the-ledger-payment-backend.onrender.com/admin and enter your
+ADMIN_KEY (set it in Render → Environment). It shows how many phones used the
+app today / in 7 days / in 30 days per country, businesses per country,
+app versions in use, and browsers.
+Phones send only a random device ID, country (from the phone's time zone),
+app version, owner/staff, browser and a one-way scrambled business code —
+never sales, names, amounts or other records. Kept for 40 days.

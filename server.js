@@ -855,6 +855,76 @@ app.post("/api/join/get", async (req, res) => {
 });
 
 /* ==================================================================
+   MAILBOXES — shops and their suppliers send each other orders
+   ------------------------------------------------------------------
+   Every message is locked (encrypted) on the phone before it is sent.
+   The server cannot read it: it only keeps it for a while (60 days,
+   the newest 300 per mailbox) and gives it to whoever asks for that
+   mailbox. A mailbox name is a 64-character code that only the shop
+   and its supplier can work out.
+   ================================================================== */
+const MAIL_TTL_SEC = 60 * 24 * 3600, MAIL_MAX = 300, MAIL_MSG_MAX = 64 * 1024;
+const MAIL_DIR = path.join(__dirname, "data", "mail");
+let mailLastAt = 0;
+function okBox(b) { return typeof b === "string" && /^[a-f0-9]{64}$/.test(b); }
+async function mailPush(box, item) {
+  const j = JSON.stringify(item);
+  if (USE_REDIS) {
+    await redisCmd(["RPUSH", "mail:" + box, j]);
+    await redisCmd(["LTRIM", "mail:" + box, String(-MAIL_MAX), "-1"]);
+    await redisCmd(["EXPIRE", "mail:" + box, String(MAIL_TTL_SEC)]);
+    return;
+  }
+  fs.mkdirSync(MAIL_DIR, { recursive: true });
+  const f = path.join(MAIL_DIR, box + ".json");
+  const arr = fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, "utf8")) : [];
+  arr.push(item);
+  fs.writeFileSync(f, JSON.stringify(arr.slice(-MAIL_MAX)));
+}
+async function mailList(box) {
+  if (USE_REDIS) {
+    const arr = (await redisCmd(["LRANGE", "mail:" + box, "0", "-1"])) || [];
+    return arr.map((x) => { try { return JSON.parse(x); } catch (e) { return null; } }).filter(Boolean);
+  }
+  const f = path.join(MAIL_DIR, box + ".json");
+  return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, "utf8")) : [];
+}
+const mailHits = new Map();
+function mailTooMany(ip) {
+  const now = Date.now(), win = 10 * 60 * 1000;
+  const list = (mailHits.get(ip) || []).filter((t) => now - t < win);
+  list.push(now); mailHits.set(ip, list);
+  if (mailHits.size > 5000) mailHits.clear();
+  return list.length > 200;
+}
+app.post("/api/mail/send", async (req, res) => {
+  try {
+    const ip = (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.ip || "?";
+    if (mailTooMany(ip)) return res.status(429).json({ ok: false, error: "Too many messages — wait a few minutes" });
+    const { box, msg } = req.body || {};
+    if (!okBox(box) || !msg || typeof msg !== "object") return res.status(400).json({ ok: false, error: "Bad request" });
+    const text = JSON.stringify(msg);
+    if (text.length > MAIL_MSG_MAX) return res.status(413).json({ ok: false, error: "Message too big" });
+    const at = Math.max(Date.now(), mailLastAt + 1); mailLastAt = at;
+    const id = at.toString(36) + "-" + crypto.randomBytes(4).toString("hex");
+    await mailPush(box, { id, at, msg });
+    res.json({ ok: true, id, at });
+  } catch (e) { console.error("mail/send:", e.message); res.status(500).json({ ok: false, error: "Server error" }); }
+});
+app.post("/api/mail/fetch", async (req, res) => {
+  try {
+    const list = Array.isArray((req.body || {}).boxes) ? req.body.boxes.slice(0, 80) : [];
+    const out = {};
+    for (const b of list) {
+      if (!b || !okBox(b.box)) continue;
+      const after = Number(b.after) || 0;
+      out[b.box] = (await mailList(b.box)).filter((m) => m && m.at > after);
+    }
+    res.json({ ok: true, boxes: out });
+  } catch (e) { console.error("mail/fetch:", e.message); res.status(500).json({ ok: false, error: "Server error" }); }
+});
+
+/* ==================================================================
    ANONYMOUS USAGE COUNT — for the app's builder only
    ------------------------------------------------------------------
    Phones send: a random device ID, country (from the phone's time zone),

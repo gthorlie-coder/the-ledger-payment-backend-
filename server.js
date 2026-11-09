@@ -94,6 +94,16 @@ async function docPut(key, val) {
 }
 const subGet = (ref) => docGet("sub:" + ref);
 const subPut = (ref, rec) => docPut("sub:" + ref, rec);
+/* A phone keeps its LEDGER- code for good, but codes made before the server used Redis were lost
+   when Render restarted. If a phone shows a real-looking code the server doesn't know, take it back in. */
+const okRef = (code) => /^[A-F0-9]{6}$/.test(String(code || ""));
+async function subGetOrCreate(code) {
+  code = String(code || "").replace(/^LEDGER-/i, "").trim().toUpperCase();
+  if (!okRef(code)) return null;
+  let rec = await subGet(code);
+  if (!rec) { rec = { createdAt: today(), country: DEFAULT_COUNTRY, paid: false, paidAt: null, renewedUntil: null, lastAmount: null, lastRawSms: null, restored: true }; await subPut(code, rec); }
+  return rec;
+}
 // The phone numbers that RECEIVE payments (yours) — never treated as a customer's number.
 const RECEIVING_NUMBERS = String(process.env.RECEIVING_NUMBERS || "231771466188").split(/[,\s]+/).map((x) => normPhone(x)).filter(Boolean);
 // Liberian numbers: +231 77 146 6188, 0771466188, 771466188 → "771466188"
@@ -235,7 +245,7 @@ app.post("/api/payer", async (req, res) => {
   try {
     const code = String(req.body?.ref || "").replace(/^LEDGER-/i, "").toUpperCase();
     const phone = normPhone(req.body?.phone);
-    const rec = code ? await subGet(code) : null;
+    const rec = code ? await subGetOrCreate(code) : null;
     if (!rec) return res.status(404).json({ ok: false, error: "Unknown reference code" });
     if (!phone || RECEIVING_NUMBERS.includes(phone)) return res.status(400).json({ ok: false, error: "Enter the phone number you will send the money from" });
     if (rec.payerPhone && rec.payerPhone !== phone) {
@@ -255,7 +265,7 @@ app.post("/api/payer", async (req, res) => {
 app.get("/api/status/:ref", async (req, res) => {
   try {
     const code = (req.params.ref || "").replace(/^LEDGER-/i, "").toUpperCase();
-    const record = await subGet(code);
+    const record = await subGetOrCreate(code);
     if (!record) return res.status(404).json({ ok: false, error: "Unknown reference code" });
     res.json({
       ok: true,
@@ -303,7 +313,7 @@ app.all("/api/sms-webhook", requireSecret(process.env.SMS_WEBHOOK_SECRET), async
   try {
     const { text, sender } = readForwardedSms(req);
     const parsed = parseIncomingSms(text);
-    let ref = parsed.ref, record = ref ? await subGet(ref) : null, how = record ? "reference" : null;
+    let ref = parsed.ref, record = ref ? await subGetOrCreate(ref) : null, how = record ? "reference" : null;
     if (!record) {
       for (const ph of parsed.phones) {
         const refs = (await docGet("subphone:" + ph)) || [];
@@ -346,8 +356,8 @@ app.all("/api/sms-webhook", requireSecret(process.env.SMS_WEBHOOK_SECRET), async
    Useful if you confirm a payment yourself (e.g. saw it in your Orange Money
    app) and the SMS-forwarder missed it for some reason. */
 async function markPaidByHand(refInput, monthsInput) {
-  const code = String(refInput || "").replace(/^LEDGER-/i, "").toUpperCase();
-  const rec = await subGet(code);
+  const code = String(refInput || "").replace(/^LEDGER-/i, "").trim().toUpperCase();
+  const rec = await subGetOrCreate(code);
   if (!rec) return null;
   const months = clampMonths(monthsInput);
   extendSubscription(rec, months);
@@ -1082,8 +1092,8 @@ app.post("/api/admin/grant", async (req, res) => {
   if (!adminGuard(req, res)) return;
   try {
     const code = String(req.body?.ref || "").replace(/^LEDGER-/i, "").trim().toUpperCase();
-    const rec = code ? await subGet(code) : null;
-    if (!rec) return res.status(404).json({ ok: false, error: "No app with that code. Ask the person for the LEDGER- code shown in their app (Renew screen)." });
+    const rec = code ? await subGetOrCreate(code) : null;
+    if (!rec) return res.status(404).json({ ok: false, error: "That doesn't look like a LEDGER- code. It has 6 letters/numbers after LEDGER-, e.g. LEDGER-405BAE." });
     const forever = !!req.body?.forever, note = cleanNote(req.body?.note);
     applyFree(rec, req.body?.months, forever); if (note) rec.note = note;
     await subPut(code, rec);
@@ -1140,7 +1150,7 @@ app.post("/api/redeem", async (req, res) => {
     const ref = String(req.body?.ref || "").replace(/^LEDGER-/i, "").trim().toUpperCase();
     let code = String(req.body?.code || "").trim().toUpperCase().replace(/\s+/g, "");
     if (/^[A-Z0-9]{6}$/.test(code)) code = "GIFT-" + code;
-    const rec = ref ? await subGet(ref) : null;
+    const rec = ref ? await subGetOrCreate(ref) : null;
     if (!rec) return res.status(404).json({ ok: false, error: "This app has no code yet — connect to the internet and try again." });
     const g = await docGet("gift:" + code);
     if (!g) return res.status(404).json({ ok: false, error: "That access code is not right. Check it and try again." });

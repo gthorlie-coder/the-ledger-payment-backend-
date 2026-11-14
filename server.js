@@ -1167,6 +1167,101 @@ app.post("/api/redeem", async (req, res) => {
   } catch (e) { console.error("redeem:", e.message); res.status(500).json({ ok: false, error: "Server error" }); }
 });
 
+/* ---- 6. Help videos: the owner pastes a Facebook link for each topic on /admin; every app reads them ---- */
+const HELP_TOPICS = ["page","intro","start","stock","sale","credit","store","staff","businesses","suppliers","reports"];
+app.get("/api/help-videos", async (req, res) => {
+  try { res.setHeader("Cache-Control", "no-store"); res.json({ ok: true, videos: (await docGet("help-videos")) || {} }); }
+  catch (e) { res.status(500).json({ ok: false, error: "Server error" }); }
+});
+app.post("/api/admin/help-videos", async (req, res) => {
+  if (!adminGuard(req, res)) return;
+  try {
+    const out = {}, inp = req.body?.videos || {};
+    for (const k of HELP_TOPICS) {
+      const v = String(inp[k] || "").trim();
+      if (!v) continue;
+      if (!/^https:\/\/([a-z0-9-]+\.)*(facebook\.com|fb\.watch|fb\.com|youtube\.com|youtu\.be|tiktok\.com)\//i.test(v) || v.length > 400) return res.status(400).json({ ok: false, error: `The link for "${k}" must be a Facebook, YouTube or TikTok link starting with https://` });
+      out[k] = v;
+    }
+    await docPut("help-videos", out);
+    res.json({ ok: true, videos: out });
+  } catch (e) { res.status(500).json({ ok: false, error: "Server error" }); }
+});
+
+/* ---- 7. Receipt identity: one phone number and one Gmail belong to ONE business only ----
+   Stops someone copying a real supplier's phone/Gmail onto fake receipts.
+   The app keeps a secret per business; only the hash is stored here. */
+const RID_NS = "rid:";
+function ridPhone(v) { const d = String(v || "").replace(/\D/g, ""); return d.length >= 7 && d.length <= 15 ? d.slice(-8) : ""; }
+function ridGmail(v) {
+  const m = String(v || "").trim().toLowerCase().match(/^([a-z0-9._%+-]{1,64})@(gmail|googlemail)\.com$/);
+  if (!m) return "";
+  return m[1].split("+")[0].replace(/\./g, "") + "@gmail.com"; // Gmail ignores dots and +tags
+}
+const ridKey = (kind, norm) => RID_NS + kind + ":" + crypto.createHash("sha256").update(kind + "|" + norm).digest("hex").slice(0, 40);
+const ridHash = (secret) => crypto.createHash("sha256").update("ledger-rid|" + secret).digest("hex");
+async function ridGet(key) { const v = await kvGet(key); return v ? JSON.parse(v) : null; }
+async function ridTake(key, rec) { // returns the owner record that is there after trying
+  if (USE_REDIS) { const ok = await redisCmd(["SET", key, JSON.stringify(rec), "NX"]); if (ok) return rec; return ridGet(key); }
+  const cur = await ridGet(key); if (cur) return cur; await kvSet(key, JSON.stringify(rec)); return rec;
+}
+async function ridIndex(add, removeKeys) {
+  const list = ((await docGet("receipt-ids")) || []).filter((x) => !removeKeys.includes(x.key));
+  if (add) list.unshift(add);
+  await docPut("receipt-ids", list.slice(0, 5000));
+}
+const ridHits = new Map();
+function ridTooMany(ip) { const now = Date.now(); const l = (ridHits.get(ip) || []).filter((t) => now - t < 600000); l.push(now); ridHits.set(ip, l); if (ridHits.size > 5000) ridHits.clear(); return l.length > 30; }
+app.post("/api/receipt-id/claim", async (req, res) => {
+  try {
+    const ip = (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.ip || "?";
+    if (ridTooMany(ip)) return res.status(429).json({ ok: false, error: "Too many tries — wait a few minutes" });
+    const b = req.body || {}, secret = String(b.secret || "");
+    if (!/^[a-f0-9]{32,64}$/.test(secret)) return res.status(400).json({ ok: false, error: "Bad request" });
+    const phone = ridPhone(b.phone), gmail = ridGmail(b.email);
+    if (!phone) return res.status(400).json({ ok: false, field: "phone", error: "Enter one correct phone number." });
+    if (!gmail) return res.status(400).json({ ok: false, field: "email", error: "Enter one Gmail address that ends with @gmail.com." });
+    const h = ridHash(secret), name = String(b.name || "").slice(0, 80), at = new Date().toISOString();
+    const want = [["phone", ridKey("phone", phone)], ["email", ridKey("email", gmail)]];
+    for (const [field, key] of want) { const cur = await ridGet(key); if (cur && cur.h !== h) return res.status(409).json({ ok: false, field, error: field === "phone" ? "taken-phone" : "taken-email" }); }
+    const got = [];
+    for (const [field, key] of want) {
+      const rec = { h, name, at, kind: field, show: field === "phone" ? String(b.phone).slice(0, 24) : gmail };
+      const owner = await ridTake(key, rec);
+      if (owner.h !== h) { for (const k of got) await kvDel(k); return res.status(409).json({ ok: false, field, error: field === "phone" ? "taken-phone" : "taken-email" }); }
+      if (owner.name !== name) await kvSet(key, JSON.stringify(Object.assign({}, owner, { name })));
+      got.push(key);
+    }
+    // let go of this business's old phone/Gmail if they changed
+    const drop = [];
+    for (const [kind, v] of [["phone", ridPhone(b.oldPhone)], ["email", ridGmail(b.oldEmail)]]) {
+      if (!v) continue; const k = ridKey(kind, v); if (got.includes(k)) continue;
+      const cur = await ridGet(k); if (cur && cur.h === h) { await kvDel(k); drop.push(k); }
+    }
+    const list = ((await docGet("receipt-ids")) || []).filter((x) => !drop.includes(x.key) && !got.includes(x.key));
+    want.forEach(([field, key]) => list.unshift({ key, kind: field, show: field === "phone" ? String(b.phone).slice(0, 24) : gmail, name, at }));
+    await docPut("receipt-ids", list.slice(0, 5000));
+    res.json({ ok: true });
+  } catch (e) { console.error("receipt-id/claim:", e.message); res.status(500).json({ ok: false, error: "Server error" }); }
+});
+app.get("/api/admin/receipt-ids", async (req, res) => {
+  if (!adminGuard(req, res)) return;
+  try { res.json({ ok: true, list: ((await docGet("receipt-ids")) || []).slice(0, 500) }); }
+  catch (e) { res.status(500).json({ ok: false, error: "Server error" }); }
+});
+app.post("/api/admin/receipt-id-free", async (req, res) => { // when the real owner complains that someone took their number/Gmail
+  if (!adminGuard(req, res)) return;
+  try {
+    const v = String(req.body?.value || "").trim();
+    const key = ridGmail(v) ? ridKey("email", ridGmail(v)) : (ridPhone(v) ? ridKey("phone", ridPhone(v)) : "");
+    if (!key) return res.status(400).json({ ok: false, error: "Type a phone number or a Gmail address." });
+    const cur = await ridGet(key);
+    if (!cur) return res.json({ ok: true, freed: false, msg: "Nobody is using it — it is already free." });
+    await kvDel(key); await ridIndex(null, [key]);
+    res.json({ ok: true, freed: true, msg: "Freed — it was used by " + (cur.name || "a business") + ". The real owner can now save it in their app." });
+  } catch (e) { res.status(500).json({ ok: false, error: "Server error" }); }
+});
+
 app.get("/admin", (req, res) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
@@ -1209,6 +1304,12 @@ input{font-size:15px;padding:10px;border:1px solid var(--line);border-radius:6px
       <div style="display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 12px;"><input id="mp-ref" placeholder="LEDGER-XXXXXX" style="flex:1;min-width:170px"><select id="mp-months" style="padding:8px;border:1px solid var(--line);border-radius:6px;font-size:14px"><option value="1">1 month</option><option value="2">2 months</option><option value="3">3 months</option><option value="6">6 months</option><option value="12">12 months</option></select><button id="mp-go" style="white-space:nowrap">Unlock by hand</button></div>
       <div class="err" id="mp-msg"></div>
       <div style="overflow-x:auto"><table id="pay"></table></div></div>
+    <div class="card"><b>🧾 Receipt phone numbers &amp; Gmails</b><p class="muted">Each phone number and Gmail can be on the receipts of ONE business only. If a real supplier says someone else took their number or Gmail, type it here and free it.</p>
+      <input id="rid-v" placeholder="Phone number or Gmail" style="width:100%"> <button id="rid-free" style="margin-top:8px">Free it</button> <span class="muted" id="rid-msg"></span>
+      <div id="rid-list" class="muted" style="margin-top:10px;font-size:13px;max-height:260px;overflow:auto"></div></div>
+    <div class="card"><b>🎬 Help videos in the app</b><p class="muted">Paste the Facebook link of each video. The first time someone opens that part of the app, they get a "Watch how it works" card that opens the video on your page. Leave a box empty until its video is ready.</p>
+      <div id="hv-rows" style="display:grid;gap:8px;margin-top:8px"></div>
+      <button id="hv-save" style="margin-top:10px">Save video links</button> <span class="muted" id="hv-msg"></span></div>
     <div class="card"><b>🎁 Free access — any country, no payment</b><p class="muted">For you, your team, friends, or people abroad (USA, China…) who can't pay by Orange Money.</p>
       <p style="margin:12px 0 4px"><b>A) They send you their code</b> <span class="muted">(shown in their app: Renew screen, LEDGER-XXXXXX)</span></p>
       <div style="display:flex;flex-wrap:wrap;gap:8px;"><input id="gr-ref" placeholder="LEDGER-XXXXXX" style="flex:1;min-width:150px"><input id="gr-note" placeholder="Who is it? e.g. John, USA" style="flex:1;min-width:150px">
@@ -1247,7 +1348,7 @@ async function load(){
   $("spark-lbl").innerHTML='<span>'+d.daily[0].day+'</span><span>'+d.daily[d.daily.length-1].day+'</span>';
   chips($("ver"),d.versions);chips($("br"),d.browsers);chips($("ins"),d.installed);
   $("gen").textContent="Updated "+new Date(d.generatedAt).toLocaleString();
-  loadPayments(); loadGrants();
+  loadPayments(); loadGrants(); loadHelp(); loadRid();
 }
 const esc=t=>String(t==null?"":t).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 async function loadPayments(){
@@ -1264,6 +1365,19 @@ const AK=()=>localStorage.getItem("ledger-admin-key")||"";
 const post=async(u,b)=>{try{return await (await fetch(u,{method:"POST",headers:{"x-admin-key":AK(),"Content-Type":"application/json"},body:JSON.stringify(b)})).json();}catch(e){return {ok:false,error:"Could not reach the server."};}};
 const lenOf=v=>v==="forever"?{forever:true}:{months:Number(v)};
 const untilTxt=u=>u==="2099-12-31"?"Forever":u;
+const HV=[["page","Your Facebook page (for “Follow us”)"],["intro","1. What is The Ledger"],["start","2. Getting started (install, PIN, business)"],["stock","3. Put your goods in (stock, PDF, photo)"],["sale","4. Record a sale & receipt"],["credit","5. Returns, expenses & Credit Book"],["store","6. Shop & store, item numbers, many customers"],["staff","7. Staff PINs"],["businesses","8. Many businesses"],["suppliers","9. Suppliers & orders"],["reports","10. Reports, backup & renewing"]];
+async function loadRid(){
+  let d;try{d=await (await fetch("/api/admin/receipt-ids",{headers:{"x-admin-key":AK()},cache:"no-store"})).json();}catch(e){return;}
+  if(!d.ok)return;
+  $("rid-list").innerHTML=d.list.length?d.list.map(x=>"<div>"+(x.kind==="phone"?"☎ ":"✉ ")+esc(x.show||"")+" — <b>"+esc(x.name||"")+"</b> · "+esc(String(x.at||"").slice(0,10))+"</div>").join(""):"No receipt numbers saved yet.";
+}
+$("rid-free").onclick=async()=>{const d=await post("/api/admin/receipt-id-free",{value:$("rid-v").value});$("rid-msg").textContent=d.ok?d.msg:(d.error||"Error");loadRid();};
+async function loadHelp(){
+  let d={videos:{}};try{d=await (await fetch("/api/help-videos",{cache:"no-store"})).json();}catch(e){}
+  $("hv-rows").innerHTML=HV.map(([k,l])=>'<label style="font-size:13px;font-weight:600">'+esc(l)+'<input data-hv="'+k+'" value="'+esc((d.videos||{})[k]||"")+'" placeholder="https://www.facebook.com/…" style="display:block;width:100%;margin-top:4px"></label>').join("");
+}
+$("hv-save").onclick=async()=>{const videos={};document.querySelectorAll("[data-hv]").forEach(i=>{videos[i.dataset.hv]=i.value.trim();});
+  const d=await post("/api/admin/help-videos",{videos});$("hv-msg").textContent=d.ok?"✓ Saved — apps pick it up next time they open.":(d.error||"Error");};
 async function loadGrants(){
   let d;try{d=await (await fetch("/api/admin/grants",{headers:{"x-admin-key":AK()},cache:"no-store"})).json();}catch(e){return;}
   if(!d.ok)return;

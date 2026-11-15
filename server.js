@@ -1262,6 +1262,110 @@ app.post("/api/admin/receipt-id-free", async (req, res) => { // when the real ow
   } catch (e) { res.status(500).json({ ok: false, error: "Server error" }); }
 });
 
+/* ---- 8. Help assistant ("Ask for help" in the app) ----
+   The AI key stays here on the server (Render setting ANTHROPIC_API_KEY); the app never sees it.
+   Optional settings: ASSISTANT_MODEL (default claude-haiku-5-5), ASSISTANT_DAILY_LIMIT (default 500 questions a day). */
+const HELP_KB = "COMPANY: Tholley Tech. Founder and CEO: Gibrill (based in Monrovia, Liberia). Mission: digital tools for businesses of every size, small and big, across Africa and for Africans in the diaspora who own businesses in Africa. Website: tholleytech.com.\n\nPRICE OF THE LEDGER: advertised as FREE throughout 2026. The standard subscription has been US$2 (L$400) a month in Liberia and NLe 50 a month in Sierra Leone, paid by Orange Money. Prices for 2027 will be announced. Users abroad can arrange access with the team. The team can visit shops in the Monrovia area to set the app up in person.\n\nOTHER WORK (in development; no public details, prices or dates \u2014 offer a meeting with Gibrill): payments that connect mobile money, banks and cards across West Africa; a digital deposit/withdrawal slip system for banks; a property information platform for West Africa.\n\nMEETINGS: 45 minutes, by phone, WhatsApp video or in person in Monrovia. Monday to Friday. Times in Monrovia time (GMT).\n\nSTEP-BY-STEP GUIDES:\nAPP: The Ledger (Live) \u2014 Bookkeeping app for businesses of every size: sales, stock, expenses, Credit Book, staff, several businesses and suppliers. Installed from tholleytech.com. Works without internet. English, French and Arabic. 33 African countries and their money.\nGUIDE: Install The Ledger on your phone\n1. Open tholleytech.com on your phone. On Android use Chrome; on iPhone use Safari.\n2. Android: tap the menu (\u22ee) at the top right, then \u201cInstall app\u201d or \u201cAdd to Home screen\u201d, then \u201cInstall\u201d.\n3. iPhone: tap the Share button (square with an arrow), scroll down, tap \u201cAdd to Home Screen\u201d, then \u201cAdd\u201d.\n4. Open The Ledger from its icon on your home screen. It now works like any app, even without internet.\n5. Already inside the app? Open the menu (\u2630) and tap \u201c\ud83d\udcf2 Install app on this phone\u201d, or tap \u201cInstall\u201d on the Home card.\nTip: You don't need the Play Store or App Store. If the install option doesn't show, update Chrome or Safari and try again.\n\nGUIDE: First-time setup (language, PIN, business)\n1. Open the app. Pick your language at the top right: EN, FR or \u0639\u0631\u0628\u064a.\n2. Read the three welcome screens (or tap Next), then tap \u201cGet started\u201d.\n3. Create your 4-number PIN, then enter it once more. Write it down somewhere safe \u2014 a forgotten PIN can't be reset.\n4. Type your business name and tap what you sell (Shop, Pharmacy, Food, Fashion, Phones or Other).\n5. Check the country and money shown (picked from your phone). Tap \u201cChange\u201d if it's wrong.\n6. Tap \u201cOpen my ledger\u201d. Your Home screen shows a \u201cGet started\u201d list to guide you.\nTip: Already use The Ledger on another phone? On the PIN screen tap \u201cI already use The Ledger\u201d to restore with a recovery code, a staff setup code, or a backup file.\n\nGUIDE: Change country, money or language\n1. Open the menu (\u2630).\n2. Tap \u201c\ud83c\udf0d Country, money & language\u201d.\n3. Choose your country \u2014 its money is set for you. Pick another money if you price in US dollars.\n4. Choose English, Fran\u00e7ais or \u0627\u0644\u0639\u0631\u0628\u064a\u0629. Arabic turns the app right-to-left.\n5. Tap Save.\n\nGUIDE: Add your goods (stock)\n1. Go to the Stock tab at the bottom.\n2. One item: tap \u201c+ Add\u201d, type the name, cost price, selling price and how many you have, then \u201cSave item\u201d.\n3. Many items at once: tap \u201c\u26a1 Add many items\u201d. Type your list, or take a photo of your written list or invoice and let the app read it.\n4. Check the items it found, fix any number, and save.\n5. Sell in packs? Set the pack name (carton, box, bag) and how many pieces are in one pack.\nTip: Set a low-stock level on each item so the app warns you in \u201c\ud83d\udea8 Stock alerts\u201d before you run out.\n\nGUIDE: Record a sale and share the receipt\n1. Tap the big + button at the bottom, then \u201cNew sale\u201d.\n2. Pick the items and how many. The total adds up by itself.\n3. Choose how the customer paid: Cash, Mobile Money or Credit (pay later).\n4. Tap \u201cSave sale\u201d. The receipt opens.\n5. Share the receipt on WhatsApp, or download it. Your stock goes down by itself.\nTip: Credit sales go straight into the Credit Book, so you never forget who owes you.\n\nGUIDE: Record an expense\n1. Tap the + button, then \u201cExpense\u201d.\n2. Type what it was for (rent, transport, light bill\u2026), the amount and the date.\n3. Tap \u201cSave entry\u201d. Your profit on Home updates by itself.\n\nGUIDE: Credit Book: who owes you, who you owe\n1. Tap the + button, then \u201cCredit / debt\u201d. To see everyone, open More \u2192 Credit Book.\n2. Choose the person, the amount and what it is for, then save.\n3. When they pay back, open their name in the Credit Book and record the payment.\n4. Supplier debts from orders appear here too, so you see what you owe each supplier.\n\nGUIDE: Shop and store (warehouse)\n1. Go to Stock and tap \u201c\ud83c\udfec Store\u201d to see what is kept in your store or warehouse.\n2. Move goods to the shop when you need them on the shelf: open the item and tap \u201cMove to shop\u201d.\n3. When goods arrive from a supplier, you choose for each item: shop, store, or split between both.\n\nGUIDE: Set up a staff phone\n1. Open the menu (\u2630) and tap \u201c\ud83e\uddd1\u200d\ud83e\udd1d\u200d\ud83e\uddd1 Staff & staff PIN\u201d.\n2. Tap \u201c+ Add\u201d, type the staff member's name and give them a staff PIN.\n3. Tap \u201c\ud83d\udd17 Send staff phone setup link\u201d and send it to the staff member on WhatsApp.\n4. The staff member opens the link on their phone, installs The Ledger and enters their staff PIN.\n5. Their sales now reach your phone. You see every receipt, even from abroad. Check \u201c\ud83d\udd14 Approvals\u201d for anything that needs you.\nTip: Staff can sell but can't see your private settings or change your owner PIN.\n\nGUIDE: Protect your records (recovery code and backup)\n1. Open the menu (\u2630) and tap \u201c\ud83d\udd11 Recovery code (if phone is lost)\u201d.\n2. Save the code somewhere safe (write it down or keep it in your WhatsApp \u201cMessage yourself\u201d chat). Never share it.\n3. For an extra copy, open \u201c\u2b73 Backup & Restore\u201d and tap \u201cDownload MY backup (private)\u201d.\n4. On a new phone: install The Ledger, tap \u201cI already use The Ledger\u201d, then \u201cI have a recovery code\u201d.\nTip: The Ledger keeps your records on your phone, locked with your PIN. Without the recovery code or a backup, a lost phone means lost records.\n\nGUIDE: Forgot or change your PIN\n1. To change it: open the menu (\u2630), tap \u201c\ud83d\udd11 Change owner PIN\u201d, enter the old PIN, then the new one twice.\n2. Forgot it: a PIN can't be reset, because your records are locked with it. Restore on the phone with your recovery code (see \u201cProtect your records\u201d).\n3. No recovery code or backup? Contact Tholley Tech on WhatsApp for advice.\n\nGUIDE: Manage several businesses\n1. Open the menu (\u2630) and tap \u201c\ud83c\udfea My businesses\u201d.\n2. Tap to add another business, give it a name, and set it up.\n3. Switch between businesses from the same place. Each one keeps its own sales, stock and staff.\n\nGUIDE: Send a budget/order to your supplier\n1. Go to Stock and tap \u201c\ud83d\uded2 What to buy\u201d (or \u201c\ud83d\ude9a Order stock\u201d).\n2. Check the items and amounts. For each item choose the unit (carton, box, bag, piece) and the currency.\n3. Choose the supplier for each item, then tap send for that supplier.\n4. WhatsApp opens with the budget. It shows half of the list; the link opens the full budget for the supplier.\n5. The supplier ticks what they have and sends it back. You are told in the app.\nTip: Suppliers who don't use The Ledger yet can join from the link: they create a PIN and can set up their business later.\n\nGUIDE: Receive goods and approve the count\n1. Open the order when the goods arrive (Suppliers & orders, or the notice on Home).\n2. Count the goods. Fix any number in \u201cArrived\u201d that is different.\n3. Tap \u201c\u2713 Approve the count \u2192\u201d.\n4. Choose where each item goes: \ud83d\uded2 Shop, \ud83c\udfec Store, or \u00bd Split. Then tap \u201c\u2713 Done \u2014 fill my stock\u201d.\n5. What you owe the supplier goes into your Credit Book. Items the supplier will send later stay as a \u201cBalance pending\u201d order.\n\nGUIDE: For suppliers: reply to a budget and send goods\n1. Tap the link the shop sent you. Enter your PIN (new? create one, and set up your business now or later).\n2. For each item tap \u201c\u2713 Have it\u201d or \u201c\u2715 Don't have\u201d. Set how many you can send and your price.\n3. Only part available? Leave \u201cSend the other \u2026 later\u201d ticked and write when (for example \u201cnext week\u201d).\n4. If some prices are in another money, enter today's exchange rate.\n5. Tap \u201cSend to the shop\u201d.\n6. When the goods are ready, tap \u201c\ud83e\uddfe Make receipt & send goods\u201d. The first time, add your business name, one phone number and one Gmail (and your logo if you like).\n7. Choose how the shop pays (credit, cash or mobile money) and tap \u201c\ud83d\ude9a Record sale & send goods\u201d. The sale goes into your books and the shop gets your receipt.\nTip: Your phone number and Gmail are locked to your business, so nobody else can put them on a receipt.\n\nGUIDE: Receipts, business stamp and reports\n1. Add your business stamp: menu (\u2630) \u2192 \u201c\ud83d\udd0f Business stamp (receipts)\u201d.\n2. Find any old receipt: + button \u2192 \u201cFind a receipt\u201d.\n3. Reports: open Profit Summary or History and tap \u201c\u2934 Share report\u201d or \u201c\ud83d\udcc4 Share PDF\u201d.\n\nGUIDE: Pay or renew your subscription\n1. The Ledger is free throughout 2026. When payment is needed, tap \u201cRenew now\u201d on Home.\n2. Liberia and Sierra Leone: pay by Orange Money to the number shown, then tap \u201cSend code on WhatsApp\u201d and \u201cCheck payment now\u201d. The app unlocks when the payment is confirmed.\n3. Outside Liberia and Sierra Leone: tap \u201cMessage us on WhatsApp\u201d to arrange payment.\n4. Got an access code from Tholley Tech? Tap \u201cHave an access code?\u201d and type it.\n\nGUIDE: Help videos and support\n1. Open the menu (\u2630) and tap \u201c\ud83c\udfac Help videos\u201d to watch short how-to videos on Facebook.\n2. The first time you open a part of the app, a help card offers the video for that part.\n3. Still stuck? Message Tholley Tech on WhatsApp or book a meeting with this assistant.";
+const HELP_RULES = `You are "Tholley Assistant", the friendly help assistant inside The Ledger app by Tholley Tech. Use ONLY the facts and guides below. If something is not there, say you are not sure and offer to book a meeting with Gibrill or take a message. Never invent prices, discounts, dates, phone numbers, partners or features. Write for busy business owners on a phone: short, warm, clear, plain words. Reply in the language the person writes in (English, French or Arabic). No Markdown headings or tables; numbered steps and short lines are fine; do not use ** for bold.
+For a how-to or set-up question, give the matching guide as numbered steps with the exact button names, adapted to their situation (Android or iPhone, owner or staff, shop or supplier), then ask if it worked. Otherwise answer in 2-6 sentences.
+To book a meeting: ask for full name, business name, ONE phone number, country and what they want to discuss; call get_free_slots; offer 2-3 times; call book_meeting only after they choose. Confirm in one sentence with the day and time (Monrovia time).
+To take feedback: ask for a rating from 1 to 5 and their comment (name optional), call save_feedback, thank them.
+If they want a phone call from Tholley Tech: take name, one phone number and the reason, call request_call, and say the team will call.
+Never ask for or accept PINs, recovery codes, passwords or card numbers. If someone shares one, tell them to keep it private.`;
+const HELP_TOOLS = [
+  { name: "get_free_slots", description: "Free 45-minute meeting times for the next working days, as 'YYYY-MM-DD HH:MM' in Monrovia time (GMT).", input_schema: { type: "object", properties: {} } },
+  { name: "book_meeting", description: "Book a meeting with Gibrill after the person chose a time from get_free_slots.", input_schema: { type: "object", properties: { name: { type: "string" }, business: { type: "string" }, phone: { type: "string" }, country: { type: "string" }, topic: { type: "string" }, mode: { type: "string", description: "phone, WhatsApp video or in person" }, slot: { type: "string" } }, required: ["name", "phone", "slot"] } },
+  { name: "save_feedback", description: "Save feedback about The Ledger or Tholley Tech.", input_schema: { type: "object", properties: { rating: { type: "number" }, message: { type: "string" }, name: { type: "string" }, product: { type: "string" } }, required: ["rating", "message"] } },
+  { name: "request_call", description: "Ask the Tholley Tech team to phone this person.", input_schema: { type: "object", properties: { name: { type: "string" }, phone: { type: "string" }, reason: { type: "string" } }, required: ["name", "phone"] } }
+];
+const HELP_SLOTS = ["10:00", "11:30", "14:00", "15:30"];
+async function helpFreeSlots() {
+  const taken = new Set(((await docGet("assistant-meetings")) || []).map((m) => m.slot));
+  const out = [], now = new Date();
+  for (let i = 1; out.length < 16 && i < 15; i++) {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + i)), wd = d.getUTCDay();
+    if (wd === 0 || wd === 6) continue;
+    for (const t of HELP_SLOTS) { const s = d.toISOString().slice(0, 10) + " " + t; if (!taken.has(s)) out.push(s); }
+  }
+  return out;
+}
+const hs = (v, n) => String(v == null ? "" : v).replace(/[\u0000-\u001f]/g, " ").trim().slice(0, n);
+async function helpRunTool(name, x, ctx, actions) {
+  if (name === "get_free_slots") return { slots: (await helpFreeSlots()).slice(0, 12) };
+  if (name === "book_meeting") {
+    const slot = hs(x.slot, 16), phone = hs(x.phone, 24);
+    if (!(await helpFreeSlots()).includes(slot)) return { error: "That time is not free. Call get_free_slots again." };
+    if (!/^\+?[\d\s()-]{7,20}$/.test(phone)) return { error: "Ask for one valid phone number." };
+    const rec = { id: crypto.randomBytes(6).toString("hex"), name: hs(x.name, 80), business: hs(x.business, 80), phone, country: hs(x.country || ctx.country, 40), topic: hs(x.topic, 200), mode: hs(x.mode, 30), slot, createdAt: new Date().toISOString(), lang: ctx.lang };
+    const list = (await docGet("assistant-meetings")) || []; list.unshift(rec); await docPut("assistant-meetings", list.slice(0, 1000));
+    actions.push({ type: "meeting", slot }); return { booked: true, slot };
+  }
+  if (name === "save_feedback") {
+    const rec = { id: crypto.randomBytes(6).toString("hex"), rating: Math.max(1, Math.min(5, Math.round(Number(x.rating) || 0))), message: hs(x.message, 800), name: hs(x.name, 80), product: hs(x.product || "The Ledger", 60), country: ctx.country, createdAt: new Date().toISOString() };
+    const list = (await docGet("assistant-feedback")) || []; list.unshift(rec); await docPut("assistant-feedback", list.slice(0, 2000));
+    actions.push({ type: "feedback", rating: rec.rating }); return { saved: true };
+  }
+  if (name === "request_call") {
+    const phone = hs(x.phone, 24);
+    if (!/^\+?[\d\s()-]{7,20}$/.test(phone)) return { error: "Ask for one valid phone number." };
+    const rec = { id: crypto.randomBytes(6).toString("hex"), name: hs(x.name, 80), phone, reason: hs(x.reason, 200), country: ctx.country, createdAt: new Date().toISOString() };
+    const list = (await docGet("assistant-calls")) || []; list.unshift(rec); await docPut("assistant-calls", list.slice(0, 1000));
+    actions.push({ type: "call" }); return { logged: true };
+  }
+  return { error: "Unknown tool" };
+}
+const helpHits = new Map();
+function helpTooMany(ip) { const now = Date.now(); const l = (helpHits.get(ip) || []).filter((t) => now - t < 600000); l.push(now); helpHits.set(ip, l); if (helpHits.size > 5000) helpHits.clear(); return l.length > 25; }
+app.post("/api/assistant", async (req, res) => {
+  try {
+    const key = process.env.ANTHROPIC_API_KEY;
+    if (!key) return res.status(503).json({ ok: false, error: "not-configured" });
+    const ip = (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.ip || "?";
+    if (helpTooMany(ip)) return res.status(429).json({ ok: false, error: "too-many" });
+    const day = new Date().toISOString().slice(0, 10), countKey = "assistant-count:" + day;
+    const used = Number(await kvGet(countKey)) || 0, cap = Number(process.env.ASSISTANT_DAILY_LIMIT) || 500;
+    if (used >= cap) return res.status(429).json({ ok: false, error: "daily-limit" });
+    const b = req.body || {};
+    let msgs = Array.isArray(b.messages) ? b.messages : [];
+    msgs = msgs.filter((m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim())
+      .map((m) => ({ role: m.role, content: m.content.slice(0, 2000) })).slice(-16);
+    while (msgs.length && msgs[0].role !== "user") msgs.shift();
+    if (!msgs.length || msgs[msgs.length - 1].role !== "user") return res.status(400).json({ ok: false, error: "Bad request" });
+    const c = b.context || {};
+    const ctx = { lang: hs(c.lang, 5), country: hs(c.country, 40), currency: hs(c.currency, 6), role: hs(c.role, 12), app: hs(c.app, 30) };
+    await kvSet(countKey, String(used + 1));
+    const system = HELP_RULES + `\n\nABOUT THIS PERSON (from their app): language ${ctx.lang || "en"}; country ${ctx.country || "unknown"}; money ${ctx.currency || "unknown"}; signed in as ${ctx.role || "unknown"}; app version ${ctx.app || "unknown"}.\n\nFACTS AND GUIDES:\n` + HELP_KB;
+    const actions = []; let reply = "";
+    const base = (process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com").replace(/\/$/, "");
+    for (let round = 0; round < 5; round++) {
+      const r = await fetch(base + "/v1/messages", { method: "POST", headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
+        body: JSON.stringify({ model: process.env.ASSISTANT_MODEL || "claude-haiku-5-5", max_tokens: 900, system, tools: HELP_TOOLS, messages: msgs }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { console.error("assistant: AI error", r.status, j && j.error && j.error.type); return res.status(502).json({ ok: false, error: "ai-error" }); }
+      const blocks = Array.isArray(j.content) ? j.content : [];
+      const text = blocks.filter((x) => x.type === "text").map((x) => x.text).join("\n").trim();
+      if (j.stop_reason !== "tool_use") { reply = text; break; }
+      msgs.push({ role: "assistant", content: blocks });
+      const results = [];
+      for (const t of blocks.filter((x) => x.type === "tool_use")) {
+        let out; try { out = await helpRunTool(t.name, t.input || {}, ctx, actions); } catch (e) { out = { error: "Could not save — try again." }; }
+        results.push({ type: "tool_result", tool_use_id: t.id, content: JSON.stringify(out) });
+      }
+      msgs.push({ role: "user", content: results });
+      if (round === 4) reply = text;
+    }
+    res.json({ ok: true, reply: reply.replace(/\*\*(.*?)\*\*/g, "$1") || "Sorry, I couldn't answer that. Please try again.", actions });
+  } catch (e) { console.error("assistant:", e.message); res.status(500).json({ ok: false, error: "Server error" }); }
+});
+app.get("/api/admin/assistant", async (req, res) => {
+  if (!adminGuard(req, res)) return;
+  try {
+    const day = new Date().toISOString().slice(0, 10);
+    res.json({ ok: true, configured: !!process.env.ANTHROPIC_API_KEY, today: Number(await kvGet("assistant-count:" + day)) || 0, limit: Number(process.env.ASSISTANT_DAILY_LIMIT) || 500,
+      meetings: ((await docGet("assistant-meetings")) || []).slice(0, 200), feedback: ((await docGet("assistant-feedback")) || []).slice(0, 200), calls: ((await docGet("assistant-calls")) || []).slice(0, 200) });
+  } catch (e) { res.status(500).json({ ok: false, error: "Server error" }); }
+});
+
 app.get("/admin", (req, res) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
@@ -1304,6 +1408,10 @@ input{font-size:15px;padding:10px;border:1px solid var(--line);border-radius:6px
       <div style="display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 12px;"><input id="mp-ref" placeholder="LEDGER-XXXXXX" style="flex:1;min-width:170px"><select id="mp-months" style="padding:8px;border:1px solid var(--line);border-radius:6px;font-size:14px"><option value="1">1 month</option><option value="2">2 months</option><option value="3">3 months</option><option value="6">6 months</option><option value="12">12 months</option></select><button id="mp-go" style="white-space:nowrap">Unlock by hand</button></div>
       <div class="err" id="mp-msg"></div>
       <div style="overflow-x:auto"><table id="pay"></table></div></div>
+    <div class="card"><b>💬 Help assistant</b><p class="muted" id="as-status">Loading…</p>
+      <div style="font-size:13px"><b>Meetings booked</b><div id="as-meet" class="muted" style="max-height:220px;overflow:auto"></div>
+      <b style="display:block;margin-top:8px">Call requests</b><div id="as-calls" class="muted" style="max-height:160px;overflow:auto"></div>
+      <b style="display:block;margin-top:8px">Feedback</b><div id="as-fb" class="muted" style="max-height:220px;overflow:auto"></div></div></div>
     <div class="card"><b>🧾 Receipt phone numbers &amp; Gmails</b><p class="muted">Each phone number and Gmail can be on the receipts of ONE business only. If a real supplier says someone else took their number or Gmail, type it here and free it.</p>
       <input id="rid-v" placeholder="Phone number or Gmail" style="width:100%"> <button id="rid-free" style="margin-top:8px">Free it</button> <span class="muted" id="rid-msg"></span>
       <div id="rid-list" class="muted" style="margin-top:10px;font-size:13px;max-height:260px;overflow:auto"></div></div>
@@ -1348,7 +1456,7 @@ async function load(){
   $("spark-lbl").innerHTML='<span>'+d.daily[0].day+'</span><span>'+d.daily[d.daily.length-1].day+'</span>';
   chips($("ver"),d.versions);chips($("br"),d.browsers);chips($("ins"),d.installed);
   $("gen").textContent="Updated "+new Date(d.generatedAt).toLocaleString();
-  loadPayments(); loadGrants(); loadHelp(); loadRid();
+  loadPayments(); loadGrants(); loadHelp(); loadRid(); loadAssistant();
 }
 const esc=t=>String(t==null?"":t).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 async function loadPayments(){
@@ -1366,6 +1474,14 @@ const post=async(u,b)=>{try{return await (await fetch(u,{method:"POST",headers:{
 const lenOf=v=>v==="forever"?{forever:true}:{months:Number(v)};
 const untilTxt=u=>u==="2099-12-31"?"Forever":u;
 const HV=[["page","Your Facebook page (for “Follow us”)"],["intro","1. What is The Ledger"],["start","2. Getting started (install, PIN, business)"],["stock","3. Put your goods in (stock, PDF, photo)"],["sale","4. Record a sale & receipt"],["credit","5. Returns, expenses & Credit Book"],["store","6. Shop & store, item numbers, many customers"],["staff","7. Staff PINs"],["businesses","8. Many businesses"],["suppliers","9. Suppliers & orders"],["reports","10. Reports, backup & renewing"]];
+async function loadAssistant(){
+  let d;try{d=await (await fetch("/api/admin/assistant",{headers:{"x-admin-key":AK()},cache:"no-store"})).json();}catch(e){return;}
+  if(!d.ok)return;
+  $("as-status").textContent=d.configured?("On. Questions today: "+d.today+" of "+d.limit+"."):"Off. Add ANTHROPIC_API_KEY in Render, Environment, to switch it on.";
+  $("as-meet").innerHTML=d.meetings.length?d.meetings.map(m=>"<div>"+esc(m.slot)+" · <b>"+esc(m.name)+"</b> ("+esc(m.business||"")+") ☎ "+esc(m.phone)+" · "+esc(m.mode||"")+" · "+esc(m.topic||"")+"</div>").join(""):"None yet.";
+  $("as-calls").innerHTML=d.calls.length?d.calls.map(c=>"<div>"+esc(String(c.createdAt).slice(0,10))+" · <b>"+esc(c.name)+"</b> ☎ "+esc(c.phone)+" · "+esc(c.reason||"")+"</div>").join(""):"None yet.";
+  $("as-fb").innerHTML=d.feedback.length?d.feedback.map(f=>"<div>"+"★".repeat(f.rating)+" "+esc(f.message)+" · "+esc(f.name||"Anonymous")+"</div>").join(""):"None yet.";
+}
 async function loadRid(){
   let d;try{d=await (await fetch("/api/admin/receipt-ids",{headers:{"x-admin-key":AK()},cache:"no-store"})).json();}catch(e){return;}
   if(!d.ok)return;
